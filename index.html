@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lista della Spesa (Sync)</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      max-width: 760px; margin: 24px auto; padding: 0 16px;
+    }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .user { font-size: 13px; opacity: .85; }
+    .row { display: flex; gap: 8px; margin: 12px 0; flex-wrap:wrap; }
+    input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 10px 12px;
+      font-size: 16px;
+      border: 1px solid #8885;
+      border-radius: 10px;
+      outline: none;
+    }
+    button {
+      padding: 10px 12px;
+      font-size: 14px;
+      border: 1px solid #8885;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    button.primary { font-weight: 600; }
+    button.danger { border-color: #c33a; }
+    button.secondary { opacity: .9; }
+    ul { list-style: none; padding: 0; margin: 14px 0 0; }
+    li {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; padding: 10px 12px;
+      border: 1px solid #8883; border-radius: 12px; margin-bottom: 10px;
+    }
+    .item-text { word-break: break-word; }
+    .muted { opacity: 0.75; font-size: 12px; margin-top: 8px; }
+    .actions { display: flex; gap: 8px; }
+    .hidden { display:none; }
+    .status { font-size: 13px; opacity: .85; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>🛒 Lista della Spesa (condivisione PC/Telefono)</h1>
+    <div>
+      <button id="loginBtn" class="primary">Accedi con Google</button>
+      <button id="logoutBtn" class="secondary hidden">Esci</button>
+      <div class="user" id="userInfo"></div>
+    </div>
+  </div>
+
+  <div id="appArea" class="hidden">
+    <div class="row">
+      <input id="itemInput" type="text" placeholder="Es. Pasta, Latte, Frutta..." autocomplete="off" />
+      <button id="addBtn" class="primary">Aggiungi</button>
+    </div>
+
+    <div class="row">
+      <button id="clearBtn" class="danger">Pulisci tutto</button>
+    </div>
+
+    <ul id="list"></ul>
+    <div class="muted" id="hint"></div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="muted" id="loginHint">
+    Effettua l’accesso per sincronizzare la lista tra telefono e PC.
+  </div>
+
+  <script type="module">
+    // Firebase supporta l'uso via CDN con import ESM (senza installare nulla). [1](https://firebase.google.com/docs/web/alt-setup)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+    import {
+      getAuth,
+      GoogleAuthProvider,
+      signInWithPopup,
+      signInWithRedirect,
+      getRedirectResult,
+      onAuthStateChanged,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
+    import {
+      getFirestore,
+      collection,
+      addDoc,
+      query,
+      orderBy,
+      onSnapshot,
+      doc,
+      deleteDoc,
+      writeBatch,
+      getDocs,
+      serverTimestamp,
+      enableIndexedDbPersistence
+    } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
+
+    // ====== 1) INCOLLA QUI LA TUA firebaseConfig ======
+    const firebaseConfig = {
+      // apiKey: "...",
+      // authDomain: "...",
+      // projectId: "...",
+      // storageBucket: "...",
+      // messagingSenderId: "...",
+      // appId: "..."
+    };
+    // ================================================
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Offline cache (opzionale ma utile). Se non disponibile, non blocca l'app.
+    try {
+      await enableIndexedDbPersistence(db);
+    } catch (e) {}
+
+    // UI elements
+    const loginBtn = document.getElementById("loginBtn");
+    const logoutBtn = document.getElementById("logoutBtn");
+    const userInfo = document.getElementById("userInfo");
+    const appArea = document.getElementById("appArea");
+    const loginHint = document.getElementById("loginHint");
+
+    const input = document.getElementById("itemInput");
+    const addBtn = document.getElementById("addBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const listEl = document.getElementById("list");
+    const hintEl = document.getElementById("hint");
+    const statusEl = document.getElementById("status");
+
+    let unsub = null;
+
+    function setStatus(msg) { statusEl.textContent = msg || ""; }
+
+    function renderEmpty() {
+      listEl.innerHTML = "";
+      hintEl.textContent = "Lista vuota. Aggiungi un elemento sopra 👆";
+    }
+
+    function renderItems(docs) {
+      listEl.innerHTML = "";
+      if (docs.length === 0) {
+        hintEl.textContent = "Lista vuota. Aggiungi un elemento sopra 👆";
+        return;
+      }
+      hintEl.textContent = "";
+
+      docs.forEach(({ id, text }) => {
+        const li = document.createElement("li");
+
+        const span = document.createElement("span");
+        span.className = "item-text";
+        span.textContent = text;
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "Rimuovi";
+        delBtn.addEventListener("click", async () => {
+          try {
+            const uid = auth.currentUser.uid;
+            await deleteDoc(doc(db, "users", uid, "items", id));
+          } catch (e) {
+            alert("Errore rimozione: " + (e?.message || e));
+          }
+        });
+
+        actions.appendChild(delBtn);
+        li.appendChild(span);
+        li.appendChild(actions);
+        listEl.appendChild(li);
+      });
+    }
+
+    async function addItem() {
+      const value = (input.value || "").trim();
+      if (!value) return;
+
+      try {
+        const uid = auth.currentUser.uid;
+        await addDoc(collection(db, "users", uid, "items"), {
+          text: value,
+          createdAt: serverTimestamp()
+        });
+        input.value = "";
+        input.focus();
+      } catch (e) {
+        alert("Errore aggiunta: " + (e?.message || e));
+      }
+    }
+
+    async function clearAll() {
+      try {
+        const uid = auth.currentUser.uid;
+        const col = collection(db, "users", uid, "items");
+        const snap = await getDocs(col);
+
+        if (snap.size === 0) return;
+        const ok = confirm("Vuoi cancellare tutta la lista?");
+        if (!ok) return;
+
+        const batch = writeBatch(db);
+        snap.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      } catch (e) {
+        alert("Errore pulizia: " + (e?.message || e));
+      }
+    }
+
+    // Login / Logout
+    const provider = new GoogleAuthProvider();
+
+    async function doLogin() {
+      try {
+        // Popup funziona bene su PC; su mobile a volte viene bloccato → fallback redirect
+        await signInWithPopup(auth, provider);
+      } catch (e) {
+        // Fallback su mobile
+        await signInWithRedirect(auth, provider);
+      }
+    }
+
+    loginBtn.addEventListener("click", doLogin);
+    logoutBtn.addEventListener("click", async () => {
+      await signOut(auth);
+    });
+
+    // Dopo redirect login (mobile), recupera risultato
+    try { await getRedirectResult(auth); } catch (e) {}
+
+    // React to auth changes
+    onAuthStateChanged(auth, (user) => {
+      // Stop old listener
+      if (unsub) { unsub(); unsub = null; }
+
+      if (!user) {
+        userInfo.textContent = "";
+        loginBtn.classList.remove("hidden");
+        logoutBtn.classList.add("hidden");
+        appArea.classList.add("hidden");
+        loginHint.classList.remove("hidden");
+        renderEmpty();
+        setStatus("");
+        return;
+      }
+
+      userInfo.textContent = user.email ? `Loggato: ${user.email}` : `Loggato`;
+      loginBtn.classList.add("hidden");
+      logoutBtn.classList.remove("hidden");
+      appArea.classList.remove("hidden");
+      loginHint.classList.add("hidden");
+
+      // Listen Firestore realtime (sincronizzazione immediata su PC/Telefono)
+      const q = query(
+        collection(db, "users", user.uid, "items"),
+        orderBy("createdAt", "asc")
+      );
+
+      setStatus("Sincronizzazione attiva ✅");
+
+      unsub = onSnapshot(q, (snap) => {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderItems(docs.map(x => ({ id: x.id, text: x.text || "" })));
+      }, (err) => {
+        setStatus("Errore sync: " + (err?.message || err));
+      });
+
+      input.focus();
+    });
+
+    addBtn.addEventListener("click", addItem);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") addItem(); });
+    clearBtn.addEventListener("click", clearAll);
+  </script>
+</body>
+</html>
