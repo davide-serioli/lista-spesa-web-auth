@@ -76,7 +76,6 @@
   </div>
 
   <script type="module">
-    // Firebase supporta l'uso via CDN con import ESM (senza installare nulla). [1](https://firebase.google.com/docs/web/alt-setup)
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
     import {
       getAuth,
@@ -102,16 +101,16 @@
       enableIndexedDbPersistence
     } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
-    // ====== 1) INCOLLA QUI LA TUA firebaseConfig ======
-    const firebaseConfig = {
-      // apiKey: "...",
-      // authDomain: "...",
-      // projectId: "...",
-      // storageBucket: "...",
-      // messagingSenderId: "...",
-      // appId: "..."
-    };
-    // ================================================
+    
+const firebaseConfig = {
+  apiKey: "AIzaSyBL3cJvZdy4yfpv5ya5UdSkAYvufZaMmfw",
+  authDomain: "lista-spesa-b0e96.firebaseapp.com",
+  projectId: "lista-spesa-b0e96",
+  storageBucket: "lista-spesa-b0e96.firebasestorage.app",
+  messagingSenderId: "752140875055",
+  appId: "1:752140875055:web:6655c955b2c47e20e4ddda",
+  measurementId: "G-YN35CP6MRL"
+};
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
