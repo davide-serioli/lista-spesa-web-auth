@@ -8,12 +8,23 @@
     :root { color-scheme: light dark; }
     body {
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      max-width: 760px; margin: 24px auto; padding: 0 16px;
+      max-width: 760px;
+      margin: 24px auto;
+      padding: 0 16px;
     }
     h1 { font-size: 22px; margin: 0 0 12px; }
-    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
     .user { font-size: 13px; opacity: .85; }
-    .row { display: flex; gap: 8px; margin: 12px 0; flex-wrap:wrap; }
+
+    .row { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+
     input[type="text"] {
       flex: 1;
       min-width: 220px;
@@ -23,6 +34,7 @@
       border-radius: 10px;
       outline: none;
     }
+
     button {
       padding: 10px 12px;
       font-size: 14px;
@@ -33,17 +45,49 @@
     button.primary { font-weight: 600; }
     button.danger { border-color: #c33a; }
     button.secondary { opacity: .9; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
     ul { list-style: none; padding: 0; margin: 14px 0 0; }
+
     li {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 10px; padding: 10px 12px;
-      border: 1px solid #8883; border-radius: 12px; margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #8883;
+      border-radius: 12px;
+      margin-bottom: 10px;
     }
-    .item-text { word-break: break-word; }
+
+    .item-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      min-width: 0;
+    }
+    .drag-handle {
+      user-select: none;
+      cursor: grab;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #8883;
+      font-size: 14px;
+      opacity: .9;
+    }
+    .drag-handle:active { cursor: grabbing; }
+
+    .item-text { word-break: break-word; flex: 1; min-width: 0; }
+
     .muted { opacity: 0.75; font-size: 12px; margin-top: 8px; }
-    .actions { display: flex; gap: 8px; }
-    .hidden { display:none; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .hidden { display: none; }
     .status { font-size: 13px; opacity: .85; margin-top: 8px; }
+
+    /* feedback drag */
+    li.drag-over { outline: 2px dashed #6aa; outline-offset: 2px; }
   </style>
 </head>
 <body>
@@ -86,6 +130,7 @@
       onAuthStateChanged,
       signOut
     } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
+
     import {
       getFirestore,
       collection,
@@ -101,25 +146,24 @@
       enableIndexedDbPersistence
     } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
-    
-const firebaseConfig = {
-  apiKey: "AIzaSyBL3cJvZdy4yfpv5ya5UdSkAYvufZaMmfw",
-  authDomain: "lista-spesa-b0e96.firebaseapp.com",
-  projectId: "lista-spesa-b0e96",
-  storageBucket: "lista-spesa-b0e96.firebasestorage.app",
-  messagingSenderId: "752140875055",
-  appId: "1:752140875055:web:6655c955b2c47e20e4ddda",
-  measurementId: "G-YN35CP6MRL"
-};
+    // ====== TUA CONFIG (lasciata uguale) ======
+    const firebaseConfig = {
+      apiKey: "AIzaSyBL3cJvZdy4yfpv5ya5UdSkAYvufZaMmfw",
+      authDomain: "lista-spesa-b0e96.firebaseapp.com",
+      projectId: "lista-spesa-b0e96",
+      storageBucket: "lista-spesa-b0e96.firebasestorage.app",
+      messagingSenderId: "752140875055",
+      appId: "1:752140875055:web:6655c955b2c47e20e4ddda",
+      measurementId: "G-YN35CP6MRL"
+    };
+    // ========================================
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-    // Offline cache (opzionale ma utile). Se non disponibile, non blocca l'app.
-    try {
-      await enableIndexedDbPersistence(db);
-    } catch (e) {}
+    // Offline cache (opzionale)
+    try { await enableIndexedDbPersistence(db); } catch (e) {}
 
     // UI elements
     const loginBtn = document.getElementById("loginBtn");
@@ -137,6 +181,11 @@ const firebaseConfig = {
 
     let unsub = null;
 
+    // Cache locale dello snapshot corrente (serve per riordinare)
+    let currentDocs = [];     // [{id, text, order, createdAt}]
+    let lastOrder = 0;        // max order
+    let migratedOnce = false; // migra vecchi doc senza "order" solo una volta
+
     function setStatus(msg) { statusEl.textContent = msg || ""; }
 
     function renderEmpty() {
@@ -144,24 +193,118 @@ const firebaseConfig = {
       hintEl.textContent = "Lista vuota. Aggiungi un elemento sopra 👆";
     }
 
+    async function ensureOrderFields(uid, docsFromSnapshot) {
+      // Se almeno uno non ha "order", assegna order sequenziale
+      const missing = docsFromSnapshot.some(d => typeof d.order !== "number");
+      if (!missing) return;
+
+      const batch = writeBatch(db);
+      docsFromSnapshot.forEach((d, i) => {
+        const ref = doc(db, "users", uid, "items", d.id);
+        batch.update(ref, { order: i + 1 });
+      });
+      await batch.commit();
+    }
+
+    async function moveByArrows(itemId, direction) {
+      // direction: -1 su, +1 giù
+      const idx = currentDocs.findIndex(x => x.id === itemId);
+      if (idx < 0) return;
+
+      const swapWith = idx + direction;
+      if (swapWith < 0 || swapWith >= currentDocs.length) return;
+
+      const a = currentDocs[idx];
+      const b = currentDocs[swapWith];
+
+      const orderA = (typeof a.order === "number") ? a.order : (idx + 1);
+      const orderB = (typeof b.order === "number") ? b.order : (swapWith + 1);
+
+      try {
+        const uid = auth.currentUser.uid;
+        const refA = doc(db, "users", uid, "items", a.id);
+        const refB = doc(db, "users", uid, "items", b.id);
+
+        const batch = writeBatch(db);
+        batch.update(refA, { order: orderB });
+        batch.update(refB, { order: orderA });
+        await batch.commit();
+      } catch (e) {
+        alert("Errore spostamento: " + (e?.message || e));
+      }
+    }
+
+    async function reorderByDrag(sourceId, targetId) {
+      if (!sourceId || !targetId || sourceId === targetId) return;
+
+      const from = currentDocs.findIndex(x => x.id === sourceId);
+      const to = currentDocs.findIndex(x => x.id === targetId);
+      if (from < 0 || to < 0) return;
+
+      const newArr = [...currentDocs];
+      const [moved] = newArr.splice(from, 1);
+      newArr.splice(to, 0, moved);
+
+      try {
+        const uid = auth.currentUser.uid;
+        const batch = writeBatch(db);
+        newArr.forEach((item, i) => {
+          const ref = doc(db, "users", uid, "items", item.id);
+          batch.update(ref, { order: i + 1 });
+        });
+        await batch.commit();
+      } catch (e) {
+        alert("Errore drag&drop: " + (e?.message || e));
+      }
+    }
+
     function renderItems(docs) {
       listEl.innerHTML = "";
-      if (docs.length === 0) {
+
+      if (!docs || docs.length === 0) {
         hintEl.textContent = "Lista vuota. Aggiungi un elemento sopra 👆";
         return;
       }
       hintEl.textContent = "";
 
-      docs.forEach(({ id, text }) => {
+      docs.forEach(({ id, text }, index) => {
         const li = document.createElement("li");
+        li.dataset.id = id;
+        li.draggable = true;
+
+        const left = document.createElement("div");
+        left.className = "item-left";
+
+        const handle = document.createElement("span");
+        handle.className = "drag-handle";
+        handle.textContent = "↕";
+        handle.title = "Trascina per riordinare (desktop)";
 
         const span = document.createElement("span");
         span.className = "item-text";
         span.textContent = text;
 
+        left.appendChild(handle);
+        left.appendChild(span);
+
         const actions = document.createElement("div");
         actions.className = "actions";
 
+        // ▲ su
+        const upBtn = document.createElement("button");
+        upBtn.textContent = "▲";
+        upBtn.title = "Sposta su";
+        if (index === 0) upBtn.disabled = true;
+        upBtn.addEventListener("click", () => moveByArrows(id, -1));
+
+        // ▼ giù
+        const downBtn = document.createElement("button");
+        downBtn.textContent = "▼";
+        downBtn.title = "Sposta giù";
+        if (index === docs.length - 1) downBtn.disabled = true;
+        downBtn.addEventListener("click", () => moveByArrows(id, +1));
+
+        // Rimuovi
         const delBtn = document.createElement("button");
         delBtn.textContent = "Rimuovi";
         delBtn.addEventListener("click", async () => {
@@ -173,10 +316,35 @@ const firebaseConfig = {
           }
         });
 
+        actions.appendChild(upBtn);
+        actions.appendChild(downBtn);
         actions.appendChild(delBtn);
-        li.appendChild(span);
+
+        li.appendChild(left);
         li.appendChild(actions);
         listEl.appendChild(li);
+
+        // Drag events
+        li.addEventListener("dragstart", (e) => {
+          e.dataTransfer.setData("text/plain", id);
+          e.dataTransfer.effectAllowed = "move";
+        });
+
+        li.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          li.classList.add("drag-over");
+        });
+
+        li.addEventListener("dragleave", () => {
+          li.classList.remove("drag-over");
+        });
+
+        li.addEventListener("drop", (e) => {
+          e.preventDefault();
+          li.classList.remove("drag-over");
+          const sourceId = e.dataTransfer.getData("text/plain");
+          reorderByDrag(sourceId, id);
+        });
       });
     }
 
@@ -188,7 +356,8 @@ const firebaseConfig = {
         const uid = auth.currentUser.uid;
         await addDoc(collection(db, "users", uid, "items"), {
           text: value,
-          createdAt: serverTimestamp()
+          createdAt: serverTimestamp(),
+          order: lastOrder + 1
         });
         input.value = "";
         input.focus();
@@ -220,26 +389,25 @@ const firebaseConfig = {
 
     async function doLogin() {
       try {
-        // Popup funziona bene su PC; su mobile a volte viene bloccato → fallback redirect
         await signInWithPopup(auth, provider);
       } catch (e) {
-        // Fallback su mobile
         await signInWithRedirect(auth, provider);
       }
     }
 
     loginBtn.addEventListener("click", doLogin);
-    logoutBtn.addEventListener("click", async () => {
-      await signOut(auth);
-    });
+    logoutBtn.addEventListener("click", async () => { await signOut(auth); });
 
-    // Dopo redirect login (mobile), recupera risultato
+    // Dopo redirect login (mobile)
     try { await getRedirectResult(auth); } catch (e) {}
 
-    // React to auth changes
     onAuthStateChanged(auth, (user) => {
-      // Stop old listener
       if (unsub) { unsub(); unsub = null; }
+
+      // reset cache ad ogni cambio utente
+      currentDocs = [];
+      lastOrder = 0;
+      migratedOnce = false;
 
       if (!user) {
         userInfo.textContent = "";
@@ -252,23 +420,46 @@ const firebaseConfig = {
         return;
       }
 
-      userInfo.textContent = user.email ? `Loggato: ${user.email}` : `Loggato`;
+      userInfo.textContent = user.email ? `Loggato: ${user.email}` : "Loggato";
       loginBtn.classList.add("hidden");
       logoutBtn.classList.remove("hidden");
       appArea.classList.remove("hidden");
       loginHint.classList.add("hidden");
 
-      // Listen Firestore realtime (sincronizzazione immediata su PC/Telefono)
+      // Query: prima order, poi createdAt (stabile)
       const q = query(
         collection(db, "users", user.uid, "items"),
+        orderBy("order", "asc"),
         orderBy("createdAt", "asc")
       );
 
       setStatus("Sincronizzazione attiva ✅");
 
-      unsub = onSnapshot(q, (snap) => {
-        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        renderItems(docs.map(x => ({ id: x.id, text: x.text || "" })));
+      unsub = onSnapshot(q, async (snap) => {
+        const docsArr = snap.docs.map(d => {
+          const data = d.data() || {};
+          return {
+            id: d.id,
+            text: data.text || "",
+            order: (typeof data.order === "number") ? data.order : null,
+            createdAt: data.createdAt || null
+          };
+        });
+
+        // Migrazione automatica dei doc esistenti senza "order"
+        if (!migratedOnce) {
+          migratedOnce = true;
+          try { await ensureOrderFields(user.uid, docsArr); } catch (e) { /* ignore */ }
+        }
+
+        currentDocs = docsArr;
+
+        lastOrder = currentDocs.reduce((max, d) => {
+          const v = (typeof d.order === "number") ? d.order : 0;
+          return Math.max(max, v);
+        }, 0);
+
+        renderItems(currentDocs);
       }, (err) => {
         setStatus("Errore sync: " + (err?.message || err));
       });
