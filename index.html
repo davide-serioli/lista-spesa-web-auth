@@ -67,6 +67,7 @@
       flex: 1;
       min-width: 0;
     }
+
     .drag-handle {
       user-select: none;
       cursor: grab;
@@ -146,7 +147,7 @@
       enableIndexedDbPersistence
     } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
 
-    // ====== TUA CONFIG (lasciata uguale) ======
+    // ====== TUA CONFIG (come nel file che mi hai allegato) ======
     const firebaseConfig = {
       apiKey: "AIzaSyBL3cJvZdy4yfpv5ya5UdSkAYvufZaMmfw",
       authDomain: "lista-spesa-b0e96.firebaseapp.com",
@@ -156,7 +157,7 @@
       appId: "1:752140875055:web:6655c955b2c47e20e4ddda",
       measurementId: "G-YN35CP6MRL"
     };
-    // ========================================
+    // ===========================================================
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
@@ -181,10 +182,10 @@
 
     let unsub = null;
 
-    // Cache locale dello snapshot corrente (serve per riordinare)
-    let currentDocs = [];     // [{id, text, order, createdAt}]
-    let lastOrder = 0;        // max order
-    let migratedOnce = false; // migra vecchi doc senza "order" solo una volta
+    // Cache locale snapshot corrente (serve per drag&drop)
+    let currentDocs = [];      // [{id, text, order, createdAt}]
+    let lastOrder = 0;         // max order
+    let migratedOnce = false;  // migra doc senza "order" una sola volta
 
     function setStatus(msg) { statusEl.textContent = msg || ""; }
 
@@ -204,34 +205,6 @@
         batch.update(ref, { order: i + 1 });
       });
       await batch.commit();
-    }
-
-    async function moveByArrows(itemId, direction) {
-      // direction: -1 su, +1 giù
-      const idx = currentDocs.findIndex(x => x.id === itemId);
-      if (idx < 0) return;
-
-      const swapWith = idx + direction;
-      if (swapWith < 0 || swapWith >= currentDocs.length) return;
-
-      const a = currentDocs[idx];
-      const b = currentDocs[swapWith];
-
-      const orderA = (typeof a.order === "number") ? a.order : (idx + 1);
-      const orderB = (typeof b.order === "number") ? b.order : (swapWith + 1);
-
-      try {
-        const uid = auth.currentUser.uid;
-        const refA = doc(db, "users", uid, "items", a.id);
-        const refB = doc(db, "users", uid, "items", b.id);
-
-        const batch = writeBatch(db);
-        batch.update(refA, { order: orderB });
-        batch.update(refB, { order: orderA });
-        await batch.commit();
-      } catch (e) {
-        alert("Errore spostamento: " + (e?.message || e));
-      }
     }
 
     async function reorderByDrag(sourceId, targetId) {
@@ -267,7 +240,7 @@
       }
       hintEl.textContent = "";
 
-      docs.forEach(({ id, text }, index) => {
+      docs.forEach(({ id, text }) => {
         const li = document.createElement("li");
         li.dataset.id = id;
         li.draggable = true;
@@ -290,21 +263,6 @@
         const actions = document.createElement("div");
         actions.className = "actions";
 
-        // ▲ su
-        const upBtn = document.createElement("button");
-        upBtn.textContent = "▲";
-        upBtn.title = "Sposta su";
-        if (index === 0) upBtn.disabled = true;
-        upBtn.addEventListener("click", () => moveByArrows(id, -1));
-
-        // ▼ giù
-        const downBtn = document.createElement("button");
-        downBtn.textContent = "▼";
-        downBtn.title = "Sposta giù";
-        if (index === docs.length - 1) downBtn.disabled = true;
-        downBtn.addEventListener("click", () => moveByArrows(id, +1));
-
-        // Rimuovi
         const delBtn = document.createElement("button");
         delBtn.textContent = "Rimuovi";
         delBtn.addEventListener("click", async () => {
@@ -316,8 +274,6 @@
           }
         });
 
-        actions.appendChild(upBtn);
-        actions.appendChild(downBtn);
         actions.appendChild(delBtn);
 
         li.appendChild(left);
@@ -446,10 +402,10 @@
           };
         });
 
-        // Migrazione automatica dei doc esistenti senza "order"
+        // Migrazione automatica doc esistenti senza "order"
         if (!migratedOnce) {
           migratedOnce = true;
-          try { await ensureOrderFields(user.uid, docsArr); } catch (e) { /* ignore */ }
+          try { await ensureOrderFields(user.uid, docsArr); } catch (e) {}
         }
 
         currentDocs = docsArr;
